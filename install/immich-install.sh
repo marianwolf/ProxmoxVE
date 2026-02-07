@@ -38,7 +38,23 @@ if [ -d /dev/dri ]; then
       sed -n "/libigdgmm12/p" ./Dockerfile | awk '{print $3}'
     )
     for url in "${INTEL_URLS[@]}"; do
+      # SECURITY: Validate URLs are from trusted domains
+      [[ "$url" =~ ^https://github\.com/ || "$url" =~ ^https://intel\.com/ ]] || {
+        msg_error "Security Alert: Untrusted URL detected: $url"
+        $STD popd
+        rm -rf "$tmp_dir"
+        exit 1
+      }
       curl -fsSLO "$url"
+    done
+    # SECURITY: Verify downloaded files are valid .deb packages
+    for deb in ./*.deb; do
+      [[ "$deb" =~ \.deb$ ]] && file "$deb" | grep -q "Debian binary package" || {
+        msg_error "Security Alert: Invalid .deb file detected: $deb"
+        $STD popd
+        rm -rf "$tmp_dir"
+        exit 1
+      }
     done
     $STD apt install -y ./libigdgmm12*.deb
     rm ./libigdgmm12*.deb
@@ -121,7 +137,15 @@ fi
 msg_ok "Dependencies Installed"
 
 msg_info "Installing Mise"
-curl -fSs https://mise.jdx.dev/gpg-key.pub | tee /etc/apt/keyrings/mise-archive-keyring.pub 1>/dev/null
+# SECURITY: Validate GPG key fingerprint before importing
+MISE_GPG_URL="https://mise.jdx.dev/gpg-key.pub"
+EXPECTED_FINGERPRINT="24853EC9F655CE80B48E6C3A8B81C9D17413A06D"
+MISE_GPG_FINGERPRINT="$(curl -fsSL "$MISE_GPG_URL" | gpg --show-keys --fingerprint 2>/dev/null | grep "fingerprint" | head -1 | awk '{print $NF}')"
+if [[ "$MISE_GPG_FINGERPRINT" != "$EXPECTED_FINGERPRINT" ]]; then
+  msg_error "Security Alert: Mise GPG fingerprint mismatch!"
+  exit 1
+fi
+curl -fSs "$MISE_GPG_URL" | tee /etc/apt/keyrings/mise-archive-keyring.pub 1>/dev/null
 echo "deb [signed-by=/etc/apt/keyrings/mise-archive-keyring.pub arch=amd64] https://mise.jdx.dev/deb stable main" >/etc/apt/sources.list.d/mise.list
 $STD apt update
 $STD apt install -y mise

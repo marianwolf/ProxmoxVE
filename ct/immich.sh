@@ -61,7 +61,15 @@ EOF
 
   if [[ ! -f /etc/apt/sources.list.d/mise.list ]]; then
     msg_info "Installing Mise"
-    curl -fSs https://mise.jdx.dev/gpg-key.pub | tee /etc/apt/keyrings/mise-archive-keyring.pub 1>/dev/null
+    # SECURITY: Validate GPG key fingerprint before importing
+    MISE_GPG_URL="https://mise.jdx.dev/gpg-key.pub"
+    EXPECTED_FINGERPRINT="24853EC9F655CE80B48E6C3A8B81C9D17413A06D"
+    MISE_GPG_FINGERPRINT="$(curl -fsSL "$MISE_GPG_URL" | gpg --show-keys --fingerprint 2>/dev/null | grep "fingerprint" | head -1 | awk '{print $NF}')"
+    if [[ "$MISE_GPG_FINGERPRINT" != "$EXPECTED_FINGERPRINT" ]]; then
+      msg_error "Security Alert: Mise GPG fingerprint mismatch!"
+      exit 1
+    fi
+    curl -fSs "$MISE_GPG_URL" | tee /etc/apt/keyrings/mise-archive-keyring.pub 1>/dev/null
     echo "deb [signed-by=/etc/apt/keyrings/mise-archive-keyring.pub arch=amd64] https://mise.jdx.dev/deb stable main" >/etc/apt/sources.list.d/mise.list
     ensure_dependencies mise
     msg_ok "Installed Mise"
@@ -71,6 +79,7 @@ EOF
   BASE_DIR=${STAGING_DIR}/base-images
   SOURCE_DIR=${STAGING_DIR}/image-source
   cd /tmp
+  # DEBUG: Security check for Intel GPU dependencies
   if [[ -f ~/.intel_version ]]; then
     curl -fsSLO https://raw.githubusercontent.com/immich-app/base-images/refs/heads/main/server/Dockerfile
     readarray -t INTEL_URLS < <(
@@ -80,8 +89,20 @@ EOF
     INTEL_RELEASE="$(grep "intel-opencl-icd_" ./Dockerfile | awk -F '_' '{print $2}')"
     if [[ "$INTEL_RELEASE" != "$(cat ~/.intel_version)" ]]; then
       msg_info "Updating Intel iGPU dependencies"
+      # SECURITY: Validate URLs are from trusted domains
       for url in "${INTEL_URLS[@]}"; do
+        [[ "$url" =~ ^https://github\.com/ || "$url" =~ ^https://intel\.com/ ]] || {
+          msg_error "Security Alert: Untrusted URL detected: $url"
+          exit 1
+        }
         curl -fsSLO "$url"
+      done
+      # SECURITY: Verify downloaded files are valid .deb packages
+      for deb in ./*.deb; do
+        [[ "$deb" =~ \.deb$ ]] && file "$deb" | grep -q "Debian binary package" || {
+          msg_error "Security Alert: Invalid .deb file detected: $deb"
+          exit 1
+        }
       done
       $STD apt-mark unhold libigdgmm12
       $STD apt install -y --allow-downgrades ./libigdgmm12*.deb
